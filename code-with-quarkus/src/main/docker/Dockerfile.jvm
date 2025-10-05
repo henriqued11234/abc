@@ -3,35 +3,49 @@
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 
-# Copia o pom.xml e a pasta .mvn primeiro (para cache de dependências)
+# Copia o pom.xml primeiro para aproveitar o cache do Docker
 COPY pom.xml .
-COPY .mvn .mvn
-COPY mvnw .
-COPY mvnw.cmd .
 
-# Baixa as dependências (esta camada será cacheada)
-RUN mvn dependency:go-offline -B
+# Copia os arquivos do Maven Wrapper (se existirem)
+COPY mvnw* ./
+COPY .mvn .mvn 2>/dev/null || true
+
+# Baixa as dependências primeiro (essa camada será cacheada)
+RUN mvn dependency:go-offline -B || true
 
 # Copia o código-fonte
 COPY src ./src
 
-# Executa o comando de build do Maven para gerar o fast-jar
-RUN mvn package -B -Dquarkus.package.type=fast-jar -DskipTests
+# Executa o build do Maven para gerar o fast-jar
+# -Dquarkus.package.type=fast-jar cria um JAR otimizado para startup rápido
+RUN mvn clean package -B -Dquarkus.package.type=fast-jar -DskipTests
 
 
 ### ESTÁGIO 2: Imagem final de execução
-# Usa a imagem base recomendada pelo Quarkus, que é otimizada e leve
-FROM registry.access.redhat.com/ubi9/openjdk-21:1.23
+# Usa a imagem base recomendada pelo Quarkus (otimizada e leve)
+FROM registry.access.redhat.com/ubi9/openjdk-21-runtime:1.23
 
-# Define o usuário para rodar a aplicação (boa prática de segurança)
+# Variáveis de ambiente para otimização
+ENV LANGUAGE='en_US:en'
+
+# Define o usuário não-root (boa prática de segurança)
 USER 185
+
+# Define o diretório de trabalho
 WORKDIR /deployments
 
-# Copia APENAS os artefatos compilados do estágio 'build' para a imagem final
-COPY --from=build --chown=185:0 /app/target/quarkus-app/ .
+# Copia APENAS os artefatos compilados do estágio de build
+COPY --from=build --chown=185:0 /app/target/quarkus-app/lib/ ./lib/
+COPY --from=build --chown=185:0 /app/target/quarkus-app/*.jar ./
+COPY --from=build --chown=185:0 /app/target/quarkus-app/app/ ./app/
+COPY --from=build --chown=185:0 /app/target/quarkus-app/quarkus/ ./quarkus/
 
-# Expõe a porta que a aplicação vai usar
+# Expõe a porta padrão do Quarkus
 EXPOSE 8080
 
+# Variáveis de ambiente para o Java
+ENV JAVA_OPTS="-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+ENV JAVA_APP_JAR="/deployments/quarkus-run.jar"
+
 # Comando para iniciar a aplicação
-CMD ["java", "-jar", "quarkus-run.jar"]
+ENTRYPOINT [ "java", "-jar", "/deployments/quarkus-run.jar" ]
