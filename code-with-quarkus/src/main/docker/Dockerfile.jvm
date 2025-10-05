@@ -3,16 +3,24 @@
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 
-# Copia todo o código-fonte para o container
-COPY . .
+# Copia o pom.xml e a pasta .mvn primeiro (para cache de dependências)
+COPY code-with-quarkus/pom.xml .
+COPY code-with-quarkus/.mvn .mvn
+COPY code-with-quarkus/mvnw .
+COPY code-with-quarkus/mvnw.cmd .
 
-# Executa o comando de build do Maven para gerar o fast-jar.
-# O -DskipTests acelera o processo.
+# Baixa as dependências (esta camada será cacheada)
+RUN mvn dependency:go-offline -B
+
+# Copia o código-fonte
+COPY code-with-quarkus/src ./src
+
+# Executa o comando de build do Maven para gerar o fast-jar
 RUN mvn package -B -Dquarkus.package.type=fast-jar -DskipTests
 
 
 ### ESTÁGIO 2: Imagem final de execução
-# Usa a imagem base recomendada pelo Quarkus, que é otimizada e leve.
+# Usa a imagem base recomendada pelo Quarkus, que é otimizada e leve
 FROM registry.access.redhat.com/ubi9/openjdk-21:1.23
 
 # Define o usuário para rodar a aplicação (boa prática de segurança)
