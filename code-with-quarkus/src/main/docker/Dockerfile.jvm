@@ -1,51 +1,44 @@
 ### ESTÁGIO 1: Build com Maven
-# Usa uma imagem com Maven e JDK para compilar a aplicação
+# Usa uma imagem oficial que já vem com Maven e JDK para compilar a aplicação
 FROM maven:3.9-eclipse-temurin-21 AS build
+
+# Define o diretório de trabalho dentro do container
 WORKDIR /app
 
-# Copia o pom.xml primeiro para aproveitar o cache do Docker
+# Otimização de Cache: Copia apenas os arquivos de definição do projeto primeiro
 COPY pom.xml .
+COPY .mvn .mvn
+COPY mvnw .
+COPY mvnw.cmd .
 
-# Copia os arquivos do Maven Wrapper (se existirem)
-COPY mvnw* ./
-COPY .mvn .mvn 2>/dev/null || true
+# Otimização de Cache: Baixa todas as dependências do projeto.
+# Como as dependências mudam com menos frequência que o código,
+# esta camada ficará no cache do Docker, acelerando builds futuros.
+RUN mvn dependency:go-offline -B
 
-# Baixa as dependências primeiro (essa camada será cacheada)
-RUN mvn dependency:go-offline -B || true
-
-# Copia o código-fonte
+# Agora, copia o resto do código-fonte
 COPY src ./src
 
-# Executa o build do Maven para gerar o fast-jar
-# -Dquarkus.package.type=fast-jar cria um JAR otimizado para startup rápido
-RUN mvn clean package -B -Dquarkus.package.type=fast-jar -DskipTests
+# Finalmente, compila o projeto e cria o fast-jar, pulando os testes.
+RUN mvn package -B -Dquarkus.package.type=fast-jar -DskipTests
 
 
 ### ESTÁGIO 2: Imagem final de execução
-# Usa a imagem base recomendada pelo Quarkus (otimizada e leve)
-FROM registry.access.redhat.com/ubi9/openjdk-21-runtime:1.23
+# Usa a imagem base recomendada pelo Quarkus (UBI Minimal), que é otimizada e segura.
+FROM registry.access.redhat.com/ubi9/openjdk-21:1.23
 
-# Variáveis de ambiente para otimização
-ENV LANGUAGE='en_US:en'
-
-# Define o usuário não-root (boa prática de segurança)
+# Define o usuário 'jboss' (ID 185) para rodar a aplicação, por segurança
 USER 185
 
-# Define o diretório de trabalho
+# Define o diretório de trabalho final
 WORKDIR /deployments
 
-# Copia APENAS os artefatos compilados do estágio de build
-COPY --from=build --chown=185:0 /app/target/quarkus-app/lib/ ./lib/
-COPY --from=build --chown=185:0 /app/target/quarkus-app/*.jar ./
-COPY --from=build --chown=185:0 /app/target/quarkus-app/app/ ./app/
-COPY --from=build --chown=185:0 /app/target/quarkus-app/quarkus/ ./quarkus/
+# Copia APENAS os artefatos compilados do estágio 'build' para a imagem final
+# O --chown garante que o usuário 'jboss' tenha permissão nos arquivos
+COPY --from=build --chown=185:0 /app/target/quarkus-app/ .
 
-# Expõe a porta padrão do Quarkus
+# Expõe a porta padrão do Quarkus (a Render irá sobrescrever com a porta correta)
 EXPOSE 8080
 
-# Variáveis de ambiente para o Java
-ENV JAVA_OPTS="-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
-ENV JAVA_APP_JAR="/deployments/quarkus-run.jar"
-
-# Comando para iniciar a aplicação
-ENTRYPOINT [ "java", "-jar", "/deployments/quarkus-run.jar" ]
+# Comando final para iniciar a aplicação Java
+CMD ["java", "-jar", "quarkus-run.jar"]
